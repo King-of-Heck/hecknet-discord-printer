@@ -1,25 +1,28 @@
 """
 discord_receipt_bot.py
 Friends type in a Discord channel → prints on your XP-80C instantly.
+Supports text messages and image attachments.
 """
 
 import asyncio
+import io
 from datetime import datetime
 
+import requests
 import discord
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageWin
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageWin, ImageFilter
 import win32print
 import win32ui
 
 
-DISCORD_TOKEN  = "YOUR_BOT_TOKEN_HERE"   # from Discord Developer Portal
-CHANNEL_ID     = 0      # right-click channel → Copy ID
+DISCORD_TOKEN  = "YOUR_BOT_TOKEN_HERE"
+CHANNEL_ID     = 0
 PRINTER_NAME   = "XP-80C"
 FONT_PATH      = "cour.ttf"
 FONT_BOLD      = "courbd.ttf"
 
-PRINT_PREFIX   = ""   # friends type: !print hello
-ALLOWED_USERS  = []          # list of Discord user IDs to whitelist, or [] for everyone
+PRINT_PREFIX   = ""
+ALLOWED_USERS  = []
 MAX_MSG_LENGTH = 500
 
 
@@ -41,7 +44,25 @@ def load_font(bold=False, size=None):
         return ImageFont.load_default()
 
 
-def build_receipt(author: str, content: str, timestamp: datetime) -> Image.Image:
+def fetch_and_dither_image(url: str, width_px: int = TEXT_PX) -> Image.Image:
+    """Download an image, resize to paper width, and Floyd-Steinberg dither to B&W."""
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
+    img = Image.open(io.BytesIO(r.content)).convert("RGB")
+
+    w, h = img.size
+    new_h = int(h * width_px / w)
+    img = img.resize((width_px, new_h), Image.LANCZOS)
+
+    img = img.convert("L")
+    img = ImageEnhance.Contrast(img).enhance(1.8)
+    img = ImageEnhance.Sharpness(img).enhance(2.0)
+    img = img.convert("1", dither=Image.FLOYDSTEINBERG)
+    return img.convert("RGB")
+
+
+def build_receipt(author: str, content: str, timestamp: datetime,
+                  attachment_imgs: list) -> Image.Image:
     S       = RENDER_SCALE
     paper_w = PAPER_PX * S
     margin  = MARGIN_PX * S
@@ -65,36 +86,55 @@ def build_receipt(author: str, content: str, timestamp: datetime) -> Image.Image
     add(f"FROM: {author}", bold=True)
     div()
 
-    for paragraph in content.splitlines():
-        if not paragraph.strip():
-            add(" ")
-            continue
-        line = ""
-        for word in paragraph.split():
-            test = (line + " " + word).strip()
-            if font_n.getlength(test) <= text_w:
-                line = test
-            else:
-                if line: add(line)
-                line = word
-        if line: add(line)
+    if content.strip():
+        for paragraph in content.splitlines():
+            if not paragraph.strip():
+                add(" ")
+                continue
+            line = ""
+            for word in paragraph.split():
+                test = (line + " " + word).strip()
+                if font_n.getlength(test) <= text_w:
+                    line = test
+                else:
+                    if line: add(line)
+                    line = word
+            if line: add(line)
+        div()
 
-    div()
     add("beep boop!", align="center", small=True)
 
-    total_h = len(ops) * line_h + line_h * 2
-    hi_res  = Image.new("RGB", (paper_w, total_h), "white")
-    draw    = ImageDraw.Draw(hi_res)
-    y       = margin // 2
+    text_block_h = len(ops) * line_h + line_h * 2
+    hi_res = Image.new("RGB", (paper_w, text_block_h), "white")
+    draw   = ImageDraw.Draw(hi_res)
+    y      = margin // 2
 
     for text, font, align in ops:
         x = (paper_w - font.getlength(text)) / 2 if align == "center" else margin
         draw.text((x, y), text, font=font, fill="black")
         y += line_h
 
-    output = hi_res.resize((PAPER_PX, int(total_h / S)), Image.LANCZOS)
+    text_out_h = int(text_block_h / S)
+    output = hi_res.resize((PAPER_PX, text_out_h), Image.LANCZOS)
     output = ImageEnhance.Contrast(output).enhance(2.5).convert("L").convert("RGB")
-    return output.crop((0, 0, PAPER_PX, int(y / S) + 4))
+    output = output.crop((0, 0, PAPER_PX, int(y / S) + 4))
+
+    if attachment_imgs:
+        parts = [output]
+        for att_img in attachment_imgs:
+            gap = Image.new("RGB", (PAPER_PX, 6), "white")
+            parts.append(gap)
+            parts.append(att_img)
+
+        total_h = sum(p.size[1] for p in parts)
+        combined = Image.new("RGB", (PAPER_PX, total_h), "white")
+        paste_y = 0
+        for p in parts:
+            combined.paste(p, (0, paste_y))
+            paste_y += p.size[1]
+        return combined
+
+    return output
 
 
 def send_to_printer(img: Image.Image):
@@ -121,14 +161,16 @@ def send_cut():
     finally:
         win32print.ClosePrinter(hp)
 
-def print_receipt(author, content, timestamp):
-    send_to_printer(build_receipt(author, content, timestamp))
+def print_receipt(author, content, timestamp, attachment_imgs):
+    send_to_printer(build_receipt(author, content, timestamp, attachment_imgs))
     send_cut()
 
 
 intents = discord.Intents.default()
 intents.message_content = True
 client  = discord.Client(intents=intents)
+
+SUPPORTED_IMG_TYPES = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
 @client.event
 async def on_ready():
@@ -141,23 +183,42 @@ async def on_message(message: discord.Message):
     if ALLOWED_USERS and message.author.id not in ALLOWED_USERS: return
 
     content = message.content
+
     if PRINT_PREFIX:
         if not content.startswith(PRINT_PREFIX): return
         content = content[len(PRINT_PREFIX):].strip()
-        if not content:
-            await message.add_reaction("❓"); return
+
+    image_attachments = [
+        a for a in message.attachments
+        if any(a.filename.lower().endswith(ext) for ext in SUPPORTED_IMG_TYPES)
+    ]
+
+    has_content = content.strip() or image_attachments
+    if not has_content: return
 
     if len(content) > MAX_MSG_LENGTH:
-        await message.reply(f"⚠️ Max {MAX_MSG_LENGTH} chars!", delete_after=10); return
+        await message.reply(f"⚠️ Max {MAX_MSG_LENGTH} chars!", delete_after=10)
+        return
 
-    print(f"{message.author.display_name}: {content[:60]}")
+    print(f"{message.author.display_name}: {content[:60]}"
+          + (f" + {len(image_attachments)} image(s)" if image_attachments else ""))
+
     try:
-        await asyncio.get_event_loop().run_in_executor(
-            None, print_receipt, message.author.display_name,
-            content, message.created_at.astimezone()
-        )
+        def prepare():
+            imgs = []
+            for att in image_attachments:
+                try:
+                    imgs.append(fetch_and_dither_image(att.url))
+                except Exception as e:
+                    print(f"Could not load image {att.filename}: {e}")
+            print_receipt(message.author.display_name, content,
+                          message.created_at.astimezone(), imgs)
+
+        await asyncio.get_event_loop().run_in_executor(None, prepare)
         await message.add_reaction("🖨️")
+
     except Exception as e:
+        print(f"Error: {e}")
         await message.add_reaction("❌")
         await message.reply(f"⚠️ Print failed: {e}", delete_after=15)
 
