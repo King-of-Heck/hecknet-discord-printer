@@ -150,20 +150,10 @@ def send_to_printer(img: Image.Image):
     hdc.EndDoc()
     hdc.DeleteDC()
 
-def send_cut():
-    hp = win32print.OpenPrinter(PRINTER_NAME)
-    try:
-        win32print.StartDocPrinter(hp, 1, ("Cut", None, "RAW"))
-        win32print.StartPagePrinter(hp)
-        win32print.WritePrinter(hp, b'\x1b\x64\x03\x1d\x56\x00')
-        win32print.EndPagePrinter(hp)
-        win32print.EndDocPrinter(hp)
-    finally:
-        win32print.ClosePrinter(hp)
 
 def print_receipt(author, content, timestamp, attachment_imgs):
     send_to_printer(build_receipt(author, content, timestamp, attachment_imgs))
-    send_cut()
+   
 
 
 intents = discord.Intents.default()
