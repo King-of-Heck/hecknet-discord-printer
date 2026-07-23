@@ -220,5 +220,9 @@ async def on_message(message: discord.Message):
 
 if __name__ == "__main__":
     if DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print(" Set DISCORD_TOKEN first!"); exit(1)
+        print("Set DISCORD_TOKEN at the top of the file first.")
+        exit(1)
+    if not CHANNEL_ID:
+        print("Set CHANNEL_ID at the top of the file first.")
+        exit(1)
     client.run(DISCORD_TOKEN)
