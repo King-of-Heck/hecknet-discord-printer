@@ -1,8 +1,11 @@
 """
 discord_receipt_bot.py
-Friends type in a Discord channel → prints on your XP-80C instantly.
+Friends type in a Discord channel → prints on your RECEIPT PRINTER instantly.
 Supports text messages and image attachments.
 """
+
+import sys
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import asyncio
 import io
@@ -15,8 +18,8 @@ import win32print
 import win32ui
 
 
-DISCORD_TOKEN  = "YOUR_BOT_TOKEN_HERE"
-CHANNEL_ID     = 0
+DISCORD_TOKEN  = "YOUR_BOT_TOKEN_HERE"   # from the Discord Developer Portal
+CHANNEL_ID     = 0                       # right-click the channel -> Copy ID
 PRINTER_NAME   = "XP-80C"
 FONT_PATH      = "cour.ttf"
 FONT_BOLD      = "courbd.ttf"
