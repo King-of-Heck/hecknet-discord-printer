@@ -1,7 +1,10 @@
 """
-discord_receipt_bot.py
-Friends type in a Discord channel → prints on your RECEIPT PRINTER instantly.
-Supports text messages and image attachments.
+Discord to receipt printer.
+
+Anything posted in one watched Discord channel prints immediately. Handles
+text messages and image attachments.
+
+    python discord_printer.py
 """
 
 import sys
